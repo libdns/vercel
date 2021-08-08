@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	vercel "github.com/fairhat/libdns-vercel"
+	vercel "github.com/libdns/vercel"
 	"github.com/libdns/libdns"
 )
 

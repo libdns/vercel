@@ -23,7 +23,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/fairhat/libdns-vercel"
+	"github.com/libdns/vercel"
 )
 
 func main() {
