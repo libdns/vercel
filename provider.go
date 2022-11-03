@@ -10,12 +10,14 @@ import (
 // Provider implements the libdns interfaces for Vercel
 type Provider struct {
 	// AuthAPIToken is the Vercel Authentication Token - see https://vercel.com/docs/api#api-basics/authentication
-	AuthAPIToken string `json:"auth_api_token"`
+	AuthAPIToken string `json:"auth_api_token,omitempty"`
+	// Optional, TeamId is the Vercel Team ID - see https://vercel.com/docs/rest-api#introduction/api-basics/authentication/accessing-resources-owned-by-a-team
+	TeamId string `json:"team_id,omitempty"`
 }
 
 // GetRecords lists all the records in the zone.
 func (p *Provider) GetRecords(ctx context.Context, zone string) ([]libdns.Record, error) {
-	records, err := getAllRecords(ctx, p.AuthAPIToken, unFQDN(zone))
+	records, err := getAllRecords(ctx, p.AuthAPIToken, unFQDN(zone), p.TeamId)
 	if err != nil {
 		return nil, err
 	}
@@ -28,7 +30,7 @@ func (p *Provider) AppendRecords(ctx context.Context, zone string, records []lib
 	var appendedRecords []libdns.Record
 
 	for _, record := range records {
-		newRecord, err := createRecord(ctx, p.AuthAPIToken, unFQDN(zone), record)
+		newRecord, err := createRecord(ctx, p.AuthAPIToken, unFQDN(zone), record, p.TeamId)
 		if err != nil {
 			return nil, err
 		}
@@ -41,7 +43,7 @@ func (p *Provider) AppendRecords(ctx context.Context, zone string, records []lib
 // DeleteRecords deletes the records from the zone.
 func (p *Provider) DeleteRecords(ctx context.Context, zone string, records []libdns.Record) ([]libdns.Record, error) {
 	for _, record := range records {
-		err := deleteRecord(ctx, unFQDN(zone), p.AuthAPIToken, record)
+		err := deleteRecord(ctx, unFQDN(zone), p.AuthAPIToken, record, p.TeamId)
 		if err != nil {
 			return nil, err
 		}
@@ -56,7 +58,7 @@ func (p *Provider) SetRecords(ctx context.Context, zone string, records []libdns
 	var setRecords []libdns.Record
 
 	for _, record := range records {
-		setRecord, err := createOrUpdateRecord(ctx, p.AuthAPIToken, unFQDN(zone), record)
+		setRecord, err := createOrUpdateRecord(ctx, p.AuthAPIToken, unFQDN(zone), record, p.TeamId)
 		if err != nil {
 			return setRecords, err
 		}

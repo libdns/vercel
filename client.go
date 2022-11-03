@@ -30,10 +30,16 @@ type VercelRecord struct {
 	TTL   int    `json:"ttl"`
 }
 
-func doRequest(token string, request *http.Request) ([]byte, error) {
+func doRequest(token string, teamId string, request *http.Request) ([]byte, error) {
 	// Bearer Token for Vercel Authorization: Bearer <TOKEN>
 	request.Header.Add("Authorization", "Bearer "+token)
 	request.Header.Add("Content-Type", "application/json")
+
+	if teamId != "" {
+		q := request.URL.Query()
+		q.Add("teamId", teamId)
+		request.URL.RawQuery = q.Encode()
+	}
 
 	client := &http.Client{}
 	response, err := client.Do(request)
@@ -56,13 +62,13 @@ func doRequest(token string, request *http.Request) ([]byte, error) {
 	return data, nil
 }
 
-func getAllRecords(ctx context.Context, token string, zone string) ([]libdns.Record, error) {
+func getAllRecords(ctx context.Context, token string, zone string, teamId string) ([]libdns.Record, error) {
 	req, err := http.NewRequestWithContext(ctx, "GET", fmt.Sprintf("https://api.vercel.com/v4/domains/%s/records", zone), nil)
 	if err != nil {
 		return nil, err
 	}
 
-	data, err := doRequest(token, req)
+	data, err := doRequest(token, teamId, req)
 	if err != nil {
 		return nil, err
 	}
@@ -86,7 +92,7 @@ func getAllRecords(ctx context.Context, token string, zone string) ([]libdns.Rec
 	return records, nil
 }
 
-func createRecord(ctx context.Context, token string, zone string, r libdns.Record) (libdns.Record, error) {
+func createRecord(ctx context.Context, token string, zone string, r libdns.Record, teamId string) (libdns.Record, error) {
 	reqData := VercelRecord{
 		Type:  r.Type,
 		Name:  normalizeRecordName(r.Name, zone),
@@ -103,7 +109,7 @@ func createRecord(ctx context.Context, token string, zone string, r libdns.Recor
 	if err != nil {
 		return libdns.Record{}, err
 	}
-	data, err := doRequest(token, req)
+	data, err := doRequest(token, teamId, req)
 	if err != nil {
 		return libdns.Record{}, err
 	}
@@ -121,13 +127,13 @@ func createRecord(ctx context.Context, token string, zone string, r libdns.Recor
 	}, nil
 }
 
-func deleteRecord(ctx context.Context, zone string, token string, record libdns.Record) error {
+func deleteRecord(ctx context.Context, zone string, token string, record libdns.Record, teamId string) error {
 	req, err := http.NewRequestWithContext(ctx, "DELETE", fmt.Sprintf("https://api.vercel.com/v2/domains/%s/records/%s", zone, record.ID), nil)
 	if err != nil {
 		return err
 	}
 
-	_, err = doRequest(token, req)
+	_, err = doRequest(token, teamId, req)
 	if err != nil {
 		return err
 	}
@@ -135,14 +141,14 @@ func deleteRecord(ctx context.Context, zone string, token string, record libdns.
 	return nil
 }
 
-func updateRecord(ctx context.Context, token string, zone string, r libdns.Record) (libdns.Record, error) {
-	err := deleteRecord(ctx, zone, token, r)
+func updateRecord(ctx context.Context, token string, zone string, r libdns.Record, teamId string) (libdns.Record, error) {
+	err := deleteRecord(ctx, zone, token, r, teamId)
 
 	if err != nil {
 		return libdns.Record{}, err
 	}
 
-	newRecord, err := createRecord(ctx, token, zone, r)
+	newRecord, err := createRecord(ctx, token, zone, r, teamId)
 	if err != nil {
 		return libdns.Record{}, err
 	}
@@ -150,12 +156,12 @@ func updateRecord(ctx context.Context, token string, zone string, r libdns.Recor
 	return newRecord, nil
 }
 
-func createOrUpdateRecord(ctx context.Context, token string, zone string, r libdns.Record) (libdns.Record, error) {
+func createOrUpdateRecord(ctx context.Context, token string, zone string, r libdns.Record, teamId string) (libdns.Record, error) {
 	if len(r.ID) == 0 {
-		return createRecord(ctx, token, zone, r)
+		return createRecord(ctx, token, zone, r, teamId)
 	}
 
-	return updateRecord(ctx, token, zone, r)
+	return updateRecord(ctx, token, zone, r, teamId)
 }
 
 func normalizeRecordName(recordName string, zone string) string {
