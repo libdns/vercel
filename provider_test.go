@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	vercel "github.com/libdns/vercel"
 	"github.com/libdns/libdns"
+	vercel "github.com/libdns/vercel"
 )
 
 var (
@@ -20,25 +20,20 @@ var (
 
 type testRecordsCleanup = func()
 
-func setupTestRecords(t *testing.T, p *vercel.Provider) ([]libdns.Record, testRecordsCleanup) {
-	testRecords := []libdns.Record{
-		{
-			Type:  "TXT",
-			Name:  "test1",
-			Value: "test1",
-			TTL:   ttl,
-		}, {
-			Type:  "TXT",
-			Name:  "test2",
-			Value: "test2",
-			TTL:   ttl,
-		}, {
-			Type:  "TXT",
-			Name:  "test3",
-			Value: "test3",
-			TTL:   ttl,
-		},
+func toRecords(txts []libdns.TXT) []libdns.Record {
+	records := make([]libdns.Record, len(txts))
+	for i, t := range txts {
+		records[i] = t
 	}
+	return records
+}
+
+func setupTestRecords(t *testing.T, p *vercel.Provider) ([]libdns.Record, testRecordsCleanup) {
+	testRecords := toRecords([]libdns.TXT{
+		{Name: "test1", Text: "test1", TTL: ttl},
+		{Name: "test2", Text: "test2", TTL: ttl},
+		{Name: "test3", Text: "test3", TTL: ttl},
+	})
 
 	records, err := p.AppendRecords(context.TODO(), envZone, testRecords)
 	if err != nil {
@@ -84,43 +79,43 @@ func Test_AppendRecords(t *testing.T) {
 	}{
 		{
 			// multiple records
-			records: []libdns.Record{
-				{Type: "TXT", Name: "test_1", Value: "test_1", TTL: ttl},
-				{Type: "TXT", Name: "test_2", Value: "test_2", TTL: ttl},
-				{Type: "TXT", Name: "test_3", Value: "test_3", TTL: ttl},
-			},
-			expected: []libdns.Record{
-				{Type: "TXT", Name: "test_1", Value: "test_1", TTL: ttl},
-				{Type: "TXT", Name: "test_2", Value: "test_2", TTL: ttl},
-				{Type: "TXT", Name: "test_3", Value: "test_3", TTL: ttl},
-			},
+			records: toRecords([]libdns.TXT{
+				{Name: "test_1", Text: "test_1", TTL: ttl},
+				{Name: "test_2", Text: "test_2", TTL: ttl},
+				{Name: "test_3", Text: "test_3", TTL: ttl},
+			}),
+			expected: toRecords([]libdns.TXT{
+				{Name: "test_1", Text: "test_1", TTL: ttl},
+				{Name: "test_2", Text: "test_2", TTL: ttl},
+				{Name: "test_3", Text: "test_3", TTL: ttl},
+			}),
 		},
 		{
 			// relative name
-			records: []libdns.Record{
-				{Type: "TXT", Name: "123.test", Value: "123", TTL: ttl},
-			},
-			expected: []libdns.Record{
-				{Type: "TXT", Name: "123.test", Value: "123", TTL: ttl},
-			},
+			records: toRecords([]libdns.TXT{
+				{Name: "123.test", Text: "123", TTL: ttl},
+			}),
+			expected: toRecords([]libdns.TXT{
+				{Name: "123.test", Text: "123", TTL: ttl},
+			}),
 		},
 		{
 			// (fqdn) sans trailing dot
-			records: []libdns.Record{
-				{Type: "TXT", Name: fmt.Sprintf("123.test.%s", strings.TrimSuffix(envZone, ".")), Value: "test", TTL: ttl},
-			},
-			expected: []libdns.Record{
-				{Type: "TXT", Name: "123.test", Value: "test", TTL: ttl},
-			},
+			records: toRecords([]libdns.TXT{
+				{Name: fmt.Sprintf("123.test.%s", strings.TrimSuffix(envZone, ".")), Text: "test", TTL: ttl},
+			}),
+			expected: toRecords([]libdns.TXT{
+				{Name: "123.test", Text: "test", TTL: ttl},
+			}),
 		},
 		{
 			// fqdn with trailing dot
-			records: []libdns.Record{
-				{Type: "TXT", Name: fmt.Sprintf("123.test.%s.", strings.TrimSuffix(envZone, ".")), Value: "test", TTL: ttl},
-			},
-			expected: []libdns.Record{
-				{Type: "TXT", Name: "123.test", Value: "test", TTL: ttl},
-			},
+			records: toRecords([]libdns.TXT{
+				{Name: fmt.Sprintf("123.test.%s.", strings.TrimSuffix(envZone, ".")), Text: "test", TTL: ttl},
+			}),
+			expected: toRecords([]libdns.TXT{
+				{Name: "123.test", Text: "test", TTL: ttl},
+			}),
 		},
 	}
 
@@ -137,21 +132,20 @@ func Test_AppendRecords(t *testing.T) {
 			}
 
 			for k, r := range result {
-				if len(result[k].ID) == 0 {
-					t.Fatalf("len(result[%d].ID) == 0", k)
+				got := r.RR()
+				expected := c.expected[k].RR()
+				if got.Type != expected.Type {
+					t.Fatalf("r.Type != c.exptected[%d].Type => %s != %s", k, got.Type, expected.Type)
 				}
-				if r.Type != c.expected[k].Type {
-					t.Fatalf("r.Type != c.exptected[%d].Type => %s != %s", k, r.Type, c.expected[k].Type)
+				if got.Name != expected.Name {
+					t.Fatalf("r.Name != c.exptected[%d].Name => %s != %s", k, got.Name, expected.Name)
 				}
-				if r.Name != c.expected[k].Name {
-					t.Fatalf("r.Name != c.exptected[%d].Name => %s != %s", k, r.Name, c.expected[k].Name)
-				}
-				if r.Value != c.expected[k].Value {
-					t.Fatalf("r.Value != c.exptected[%d].Value => %s != %s", k, r.Value, c.expected[k].Value)
+				if got.Data != expected.Data {
+					t.Fatalf("r.Data != c.exptected[%d].Data => %s != %s", k, got.Data, expected.Data)
 				}
 				// cant check for TTL because vercel does not return any ttl values
-				// if r.TTL != c.expected[k].TTL {
-				// 	t.Fatalf("r.TTL != c.exptected[%d].TTL => %s != %s", k, r.TTL, c.expected[k].TTL)
+				// if got.TTL != expected.TTL {
+				// 	t.Fatalf("r.TTL != c.exptected[%d].TTL => %s != %s", k, got.TTL, expected.TTL)
 				// }
 			}
 		}()
@@ -176,15 +170,16 @@ func Test_DeleteRecords(t *testing.T) {
 	}
 
 	for _, testRecord := range testRecords {
-		var foundRecord *libdns.Record
+		found := false
 		for _, record := range records {
-			if testRecord.ID == record.ID {
-				foundRecord = &testRecord
+			if record.RR() == testRecord.RR() {
+				found = true
+				break
 			}
 		}
 
-		if foundRecord == nil {
-			t.Fatalf("Record not found => %s", testRecord.ID)
+		if !found {
+			t.Fatalf("Record not found => %+v", testRecord.RR())
 		}
 	}
 }
@@ -207,15 +202,16 @@ func Test_GetRecords(t *testing.T) {
 	}
 
 	for _, testRecord := range testRecords {
-		var foundRecord *libdns.Record
+		found := false
 		for _, record := range records {
-			if testRecord.ID == record.ID {
-				foundRecord = &testRecord
+			if record.RR() == testRecord.RR() {
+				found = true
+				break
 			}
 		}
 
-		if foundRecord == nil {
-			t.Fatalf("Record not found => %s", testRecord.ID)
+		if !found {
+			t.Fatalf("Record not found => %+v", testRecord.RR())
 		}
 	}
 }
@@ -226,23 +222,17 @@ func Test_SetRecords(t *testing.T) {
 	}
 
 	existingRecords, _ := setupTestRecords(t, p)
-	newTestRecords := []libdns.Record{
-		{
-			Type:  "TXT",
-			Name:  "new_test1",
-			Value: "new_test1",
-			TTL:   ttl,
-		},
-		{
-			Type:  "TXT",
-			Name:  "new_test2",
-			Value: "new_test2",
-			TTL:   ttl,
-		},
-	}
+	newTestRecords := toRecords([]libdns.TXT{
+		{Name: "new_test1", Text: "new_test1", TTL: ttl},
+		{Name: "new_test2", Text: "new_test2", TTL: ttl},
+	})
 
 	allRecords := append(existingRecords, newTestRecords...)
-	allRecords[0].Value = "new_value"
+	allRecords[0] = libdns.TXT{
+		Name: allRecords[0].RR().Name,
+		Text: "new_value",
+		TTL:  ttl,
+	}
 
 	records, err := p.SetRecords(context.TODO(), envZone, allRecords)
 	if err != nil {
@@ -254,7 +244,7 @@ func Test_SetRecords(t *testing.T) {
 		t.Fatalf("len(records) != len(allRecords) => %d != %d", len(records), len(allRecords))
 	}
 
-	if records[0].Value != "new_value" {
-		t.Fatalf(`records[0].Value != "new_value" => %s != "new_value"`, records[0].Value)
+	if records[0].RR().Data != "new_value" {
+		t.Fatalf(`records[0].RR().Data != "new_value" => %s != "new_value"`, records[0].RR().Data)
 	}
 }

@@ -5,7 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"math"
 	"net/http"
 	"strings"
@@ -18,10 +18,9 @@ type getAllRecordsResponse struct {
 	Records []VercelRecord `json:"records"`
 }
 
-type createRecordResponse struct {
-	Uid string `json:"uid"`
-}
-
+// VercelRecord is Vercel's own wire format for a DNS record. Unlike
+// [libdns.RR], it carries the provider-assigned ID needed to update or
+// delete a record.
 type VercelRecord struct {
 	Id    string `json:"id,omitempty"`
 	Type  string `json:"type"`
@@ -40,23 +39,23 @@ func doRequest(token string, request *http.Request) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-
-	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		defer response.Body.Close()
-		data, _ := ioutil.ReadAll(response.Body)
-		return data, fmt.Errorf("%s (%d)", http.StatusText(response.StatusCode), response.StatusCode)
-	}
-
 	defer response.Body.Close()
-	data, err := ioutil.ReadAll(response.Body)
+
+	data, err := io.ReadAll(response.Body)
 	if err != nil {
 		return nil, err
+	}
+
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		return data, fmt.Errorf("%s (%d)", http.StatusText(response.StatusCode), response.StatusCode)
 	}
 
 	return data, nil
 }
 
-func getAllRecords(ctx context.Context, token string, zone string) ([]libdns.Record, error) {
+// getAllRawRecords fetches the zone's records in Vercel's own format, which
+// retains the record ID that [libdns.RR] no longer carries.
+func getAllRawRecords(ctx context.Context, token string, zone string) ([]VercelRecord, error) {
 	req, err := http.NewRequestWithContext(ctx, "GET", fmt.Sprintf("https://api.vercel.com/v4/domains/%s/records", zone), nil)
 	if err != nil {
 		return nil, err
@@ -72,90 +71,121 @@ func getAllRecords(ctx context.Context, token string, zone string) ([]libdns.Rec
 		return nil, err
 	}
 
-	records := []libdns.Record{}
-	for _, r := range result.Records {
-		records = append(records, libdns.Record{
-			ID:    r.Id,
-			Type:  r.Type,
-			Name:  r.Name,
-			Value: r.Value,
-			TTL:   time.Duration(r.TTL) * time.Second,
-		})
+	return result.Records, nil
+}
+
+func getAllRecords(ctx context.Context, token string, zone string) ([]libdns.Record, error) {
+	raw, err := getAllRawRecords(ctx, token, zone)
+	if err != nil {
+		return nil, err
+	}
+
+	records := make([]libdns.Record, 0, len(raw))
+	for _, r := range raw {
+		rec, err := vercelToRR(r).Parse()
+		if err != nil {
+			return nil, fmt.Errorf("parsing Vercel DNS record %+v: %v", r, err)
+		}
+		records = append(records, rec)
 	}
 
 	return records, nil
 }
 
-func createRecord(ctx context.Context, token string, zone string, r libdns.Record) (libdns.Record, error) {
+func vercelToRR(r VercelRecord) libdns.RR {
+	return libdns.RR{
+		Name: r.Name,
+		Type: r.Type,
+		Data: r.Value,
+		TTL:  time.Duration(r.TTL) * time.Second,
+	}
+}
+
+func createRecord(ctx context.Context, token string, zone string, record libdns.Record) (libdns.Record, error) {
+	rr := record.RR()
+	name := normalizeRecordName(rr.Name, zone)
+
 	reqData := VercelRecord{
-		Type:  r.Type,
-		Name:  normalizeRecordName(r.Name, zone),
-		Value: r.Value,
-		TTL:   int(math.Max((r.TTL.Seconds()), 60)),
+		Type:  rr.Type,
+		Name:  name,
+		Value: rr.Data,
+		TTL:   int(math.Max(rr.TTL.Seconds(), 60)),
 	}
 
 	reqBuffer, err := json.Marshal(reqData)
 	if err != nil {
-		return libdns.Record{}, err
+		return nil, err
 	}
 
 	req, err := http.NewRequestWithContext(ctx, "POST", fmt.Sprintf("https://api.vercel.com/v2/domains/%s/records", zone), bytes.NewBuffer(reqBuffer))
 	if err != nil {
-		return libdns.Record{}, err
-	}
-	data, err := doRequest(token, req)
-	if err != nil {
-		return libdns.Record{}, err
+		return nil, err
 	}
 
-	result := createRecordResponse{}
-	if err := json.Unmarshal(data, &result); err != nil {
-		return libdns.Record{}, err
+	if _, err := doRequest(token, req); err != nil {
+		return nil, err
 	}
 
-	return libdns.Record{
-		ID:    result.Uid,
-		Type:  r.Type,
-		Name:  normalizeRecordName(r.Name, zone),
-		Value: r.Value,
-	}, nil
+	return (libdns.RR{
+		Name: name,
+		Type: rr.Type,
+		Data: rr.Data,
+		TTL:  time.Duration(reqData.TTL) * time.Second,
+	}).Parse()
 }
 
-func deleteRecord(ctx context.Context, zone string, token string, record libdns.Record) error {
-	req, err := http.NewRequestWithContext(ctx, "DELETE", fmt.Sprintf("https://api.vercel.com/v2/domains/%s/records/%s", zone, record.ID), nil)
+func deleteRecordByID(ctx context.Context, token string, zone string, id string) error {
+	req, err := http.NewRequestWithContext(ctx, "DELETE", fmt.Sprintf("https://api.vercel.com/v2/domains/%s/records/%s", zone, id), nil)
 	if err != nil {
 		return err
 	}
 
 	_, err = doRequest(token, req)
-	if err != nil {
-		return err
-	}
-
-	return nil
+	return err
 }
 
-func updateRecord(ctx context.Context, token string, zone string, r libdns.Record) (libdns.Record, error) {
-	err := deleteRecord(ctx, zone, token, r)
-
+// deleteRecords implements the [libdns.RecordDeleter] contract: it only
+// deletes records that exactly match an input record's name, type, TTL, and
+// value, except that an empty type, TTL, or value on the input acts as a
+// wildcard for that field (name is always required).
+func deleteRecords(ctx context.Context, token string, zone string, records []libdns.Record) ([]libdns.Record, error) {
+	raw, err := getAllRawRecords(ctx, token, zone)
 	if err != nil {
-		return libdns.Record{}, err
+		return nil, err
 	}
 
-	newRecord, err := createRecord(ctx, token, zone, r)
-	if err != nil {
-		return libdns.Record{}, err
+	var deleted []libdns.Record
+	for _, record := range records {
+		rr := record.RR()
+		name := normalizeRecordName(rr.Name, zone)
+
+		for _, r := range raw {
+			if r.Name != name {
+				continue
+			}
+			if rr.Type != "" && r.Type != rr.Type {
+				continue
+			}
+			if rr.Data != "" && r.Value != rr.Data {
+				continue
+			}
+			if rr.TTL != 0 && time.Duration(r.TTL)*time.Second != rr.TTL {
+				continue
+			}
+
+			if err := deleteRecordByID(ctx, token, zone, r.Id); err != nil {
+				return deleted, err
+			}
+
+			parsed, err := vercelToRR(r).Parse()
+			if err != nil {
+				return deleted, fmt.Errorf("parsing Vercel DNS record %+v: %v", r, err)
+			}
+			deleted = append(deleted, parsed)
+		}
 	}
 
-	return newRecord, nil
-}
-
-func createOrUpdateRecord(ctx context.Context, token string, zone string, r libdns.Record) (libdns.Record, error) {
-	if len(r.ID) == 0 {
-		return createRecord(ctx, token, zone, r)
-	}
-
-	return updateRecord(ctx, token, zone, r)
+	return deleted, nil
 }
 
 func normalizeRecordName(recordName string, zone string) string {
